@@ -1013,12 +1013,15 @@ func fakeExtract(dest string, hdr *tar.Header, tr io.Reader) error {
 }
 
 func Test_GetFSFromLayers_with_whiteouts_include_whiteout_enabled(t *testing.T) {
+	var resetMountInfoFile = provideEmptyMountinfoFile()
+	defer resetMountInfoFile()
+
 	ctrl := gomock.NewController(t)
 
 	root := t.TempDir()
 	// Write a whiteout path
 	d1 := []byte("Hello World\n")
-	if err := ioutil.WriteFile(filepath.Join(root, "foobar"), d1, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "foobar"), d1, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1067,7 +1070,7 @@ func Test_GetFSFromLayers_with_whiteouts_include_whiteout_enabled(t *testing.T) 
 	mockLayer := mockv1.NewMockLayer(ctrl)
 	mockLayer.EXPECT().MediaType().Return(types.OCILayer, nil)
 
-	rc := ioutil.NopCloser(buf)
+	rc := io.NopCloser(buf)
 	mockLayer.EXPECT().Uncompressed().Return(rc, nil)
 
 	secondLayerFiles := []string{
@@ -1082,7 +1085,7 @@ func Test_GetFSFromLayers_with_whiteouts_include_whiteout_enabled(t *testing.T) 
 	mockLayer2 := mockv1.NewMockLayer(ctrl)
 	mockLayer2.EXPECT().MediaType().Return(types.OCILayer, nil)
 
-	rc = ioutil.NopCloser(buf)
+	rc = io.NopCloser(buf)
 	mockLayer2.EXPECT().Uncompressed().Return(rc, nil)
 
 	layers := []v1.Layer{
@@ -1108,7 +1111,20 @@ func Test_GetFSFromLayers_with_whiteouts_include_whiteout_enabled(t *testing.T) 
 	}
 }
 
+func provideEmptyMountinfoFile() func() {
+	// Provide empty mountinfo file to prevent /tmp from ending up in ignore list on
+	// distributions with /tmp mountpoint. Otherwise, tests expecting operations in /tmp
+	// can fail.
+	config.MountInfoPath = "/dev/null"
+	return func() {
+		config.MountInfoPath = constants.MountInfoPath
+	}
+}
+
 func Test_GetFSFromLayers_with_whiteouts_include_whiteout_disabled(t *testing.T) {
+	var resetMountInfoFile = provideEmptyMountinfoFile()
+	defer resetMountInfoFile()
+
 	ctrl := gomock.NewController(t)
 
 	root := t.TempDir()
@@ -1209,6 +1225,9 @@ func Test_GetFSFromLayers_with_whiteouts_include_whiteout_disabled(t *testing.T)
 }
 
 func Test_GetFSFromLayers_ignorelist(t *testing.T) {
+	var resetMountInfoFile = provideEmptyMountinfoFile()
+	defer resetMountInfoFile()
+
 	ctrl := gomock.NewController(t)
 
 	root := t.TempDir()
@@ -1452,9 +1471,9 @@ func TestInitIgnoreList(t *testing.T) {
 	if _, err := mFile.WriteString(mountInfo); err != nil {
 		t.Fatal(err)
 	}
-	config.IgnoreListPath = mFile.Name()
+	config.MountInfoPath = mFile.Name()
 	defer func() {
-		config.IgnoreListPath = constants.IgnoreListPath
+		config.MountInfoPath = constants.MountInfoPath
 	}()
 
 	expected := []IgnoreListEntry{

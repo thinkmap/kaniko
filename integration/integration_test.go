@@ -17,10 +17,12 @@ limitations under the License.
 package integration
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
@@ -33,6 +35,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/pkg/errors"
 	"google.golang.org/api/option"
 
@@ -153,10 +156,10 @@ func buildRequiredImages() error {
 		command []string
 	}{{
 		name:    "Building kaniko image",
-		command: []string{"docker", "build", "-t", ExecutorImage, "-f", "../deploy/Dockerfile", ".."},
+		command: []string{"docker", "build", "-t", ExecutorImage, "-f", "../deploy/Dockerfile", "--target", "kaniko-executor", ".."},
 	}, {
 		name:    "Building cache warmer image",
-		command: []string{"docker", "build", "-t", WarmerImage, "-f", "../deploy/Dockerfile_warmer", ".."},
+		command: []string{"docker", "build", "-t", WarmerImage, "-f", "../deploy/Dockerfile", "--target", "kaniko-warmer", ".."},
 	}, {
 		name:    "Building onbuild base image",
 		command: []string{"docker", "build", "-t", config.onbuildBaseImage, "-f", fmt.Sprintf("%s/Dockerfile_onbuild_base", dockerfilesPath), "."},
@@ -282,7 +285,8 @@ func testGitBuildcontextHelper(t *testing.T, repo string) {
 
 // TestGitBuildcontext explicitly names the main branch
 // Example:
-//   git://github.com/myuser/repo#refs/heads/main
+//
+//	git://github.com/myuser/repo#refs/heads/main
 func TestGitBuildcontext(t *testing.T) {
 	repo := getGitRepo(false)
 	testGitBuildcontextHelper(t, repo)
@@ -290,7 +294,8 @@ func TestGitBuildcontext(t *testing.T) {
 
 // TestGitBuildcontextNoRef builds without any commit / branch reference
 // Example:
-//   git://github.com/myuser/repo
+//
+//	git://github.com/myuser/repo
 func TestGitBuildcontextNoRef(t *testing.T) {
 	t.Skip("Docker's behavior is to assume a 'master' branch, which the Kaniko repo doesn't have")
 	_, _, url := getBranchCommitAndURL()
@@ -299,7 +304,8 @@ func TestGitBuildcontextNoRef(t *testing.T) {
 
 // TestGitBuildcontextExplicitCommit uses an explicit commit hash instead of named reference
 // Example:
-//   git://github.com/myuser/repo#b873088c4a7b60bb7e216289c58da945d0d771b6
+//
+//	git://github.com/myuser/repo#b873088c4a7b60bb7e216289c58da945d0d771b6
 func TestGitBuildcontextExplicitCommit(t *testing.T) {
 	repo := getGitRepo(true)
 	testGitBuildcontextHelper(t, repo)
@@ -546,6 +552,28 @@ func TestLayers(t *testing.T) {
 	}
 }
 
+func TestReplaceFolderWithFileOrLink(t *testing.T) {
+	dockerfiles := []string{"TestReplaceFolderWithFile", "TestReplaceFolderWithLink"}
+	for _, dockerfile := range dockerfiles {
+		t.Run(dockerfile, func(t *testing.T) {
+			buildImage(t, dockerfile, imageBuilder)
+			kanikoImage := GetKanikoImage(config.imageRepo, dockerfile)
+
+			kanikoFiles, err := getLastLayerFiles(kanikoImage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fmt.Println(kanikoFiles)
+
+			for _, file := range kanikoFiles {
+				if strings.HasPrefix(file, "a/.wh.") {
+					t.Errorf("Last layer should not add whiteout files to deleted directory but found %s", file)
+				}
+			}
+		})
+	}
+}
+
 func buildImage(t *testing.T, dockerfile string, imageBuilder *DockerFileBuilder) {
 	t.Logf("Building image '%v'...", dockerfile)
 
@@ -711,18 +739,18 @@ func TestExitCodePropagation(t *testing.T) {
 }
 
 type fileDiff struct {
-	Name string
-	Size int
+	Name string `json:"Name"`
+	Size int    `json:"Size"`
 }
 
 type fileDiffResult struct {
-	Adds []fileDiff
-	Dels []fileDiff
+	Adds []fileDiff `json:"Adds"`
+	Dels []fileDiff `json:"Dels"`
 }
 
 type metaDiffResult struct {
-	Adds []string
-	Dels []string
+	Adds []string `json:"Adds"`
+	Dels []string `json:"Dels"`
 }
 
 type diffOutput struct {
@@ -863,6 +891,40 @@ func getImageDetails(image string) (*imageDetails, error) {
 		numLayers: len(layers),
 		digest:    digest.Hex,
 	}, nil
+}
+
+func getLastLayerFiles(image string) ([]string, error) {
+	ref, err := name.ParseReference(image, name.WeakValidation)
+	if err != nil {
+		return nil, fmt.Errorf("Couldn't parse referance to image %s: %w", image, err)
+	}
+
+	imgRef, err := remote.Image(ref)
+	if err != nil {
+		return nil, fmt.Errorf("Couldn't get reference to image %s from daemon: %w", image, err)
+	}
+	layers, err := imgRef.Layers()
+	if err != nil {
+		return nil, fmt.Errorf("Error getting layers for image %s: %w", image, err)
+	}
+	readCloser, err := layers[len(layers)-1].Uncompressed()
+	if err != nil {
+		return nil, err
+	}
+
+	tr := tar.NewReader(readCloser)
+	var files []string
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, hdr.Name)
+	}
+	return files, nil
 }
 
 func logBenchmarks(benchmark string) error {

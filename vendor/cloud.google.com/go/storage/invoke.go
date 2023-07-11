@@ -16,29 +16,39 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 
 	"cloud.google.com/go/internal"
+	"cloud.google.com/go/internal/version"
+	sinternal "cloud.google.com/go/storage/internal"
+	"github.com/google/uuid"
 	gax "github.com/googleapis/gax-go/v2"
-	"golang.org/x/xerrors"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 var defaultRetry *retryConfig = &retryConfig{}
+var xGoogDefaultHeader = fmt.Sprintf("gl-go/%s gccl/%s", version.Go(), sinternal.Version)
 
 // run determines whether a retry is necessary based on the config and
 // idempotency information. It then calls the function with or without retries
 // as appropriate, using the configured settings.
-func run(ctx context.Context, call func() error, retry *retryConfig, isIdempotent bool) error {
+func run(ctx context.Context, call func() error, retry *retryConfig, isIdempotent bool, setHeader func(string, int)) error {
+	attempts := 1
+	invocationID := uuid.New().String()
+
 	if retry == nil {
 		retry = defaultRetry
 	}
 	if (retry.policy == RetryIdempotent && !isIdempotent) || retry.policy == RetryNever {
+		setHeader(invocationID, attempts)
 		return call()
 	}
 	bo := gax.Backoff{}
@@ -47,21 +57,57 @@ func run(ctx context.Context, call func() error, retry *retryConfig, isIdempoten
 		bo.Initial = retry.backoff.Initial
 		bo.Max = retry.backoff.Max
 	}
-	var errorFunc func(err error) bool = shouldRetry
+	var errorFunc func(err error) bool = ShouldRetry
 	if retry.shouldRetry != nil {
 		errorFunc = retry.shouldRetry
 	}
+
 	return internal.Retry(ctx, bo, func() (stop bool, err error) {
+		setHeader(invocationID, attempts)
 		err = call()
+		attempts++
 		return !errorFunc(err), err
 	})
 }
 
-func shouldRetry(err error) bool {
+func setRetryHeaderHTTP(req interface{ Header() http.Header }) func(string, int) {
+	return func(invocationID string, attempts int) {
+		if req == nil {
+			return
+		}
+		header := req.Header()
+		// TODO(b/274504690): Consider dropping gccl-invocation-id key since it
+		// duplicates the X-Goog-Gcs-Idempotency-Token header (added in v1.31.0).
+		invocationHeader := fmt.Sprintf("gccl-invocation-id/%v gccl-attempt-count/%v", invocationID, attempts)
+		xGoogHeader := strings.Join([]string{invocationHeader, xGoogDefaultHeader}, " ")
+		header.Set("x-goog-api-client", xGoogHeader)
+		// Also use the invocationID for the idempotency token header, which will
+		// enable idempotent retries for more operations.
+		header.Set("x-goog-gcs-idempotency-token", invocationID)
+	}
+}
+
+// TODO: Implement method setting header via context for gRPC
+func setRetryHeaderGRPC(_ context.Context) func(string, int) {
+	return func(_ string, _ int) {
+		return
+	}
+}
+
+// ShouldRetry returns true if an error is retryable, based on best practice
+// guidance from GCS. See
+// https://cloud.google.com/storage/docs/retry-strategy#go for more information
+// on what errors are considered retryable.
+//
+// If you would like to customize retryable errors, use the WithErrorFunc to
+// supply a RetryOption to your library calls. For example, to retry additional
+// errors, you can write a custom func that wraps ShouldRetry and also specifies
+// additional errors that should return true.
+func ShouldRetry(err error) bool {
 	if err == nil {
 		return false
 	}
-	if xerrors.Is(err, io.ErrUnexpectedEOF) {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 
@@ -99,7 +145,7 @@ func shouldRetry(err error) bool {
 	}
 	// Unwrap is only supported in go1.13.x+
 	if e, ok := err.(interface{ Unwrap() error }); ok {
-		return shouldRetry(e.Unwrap())
+		return ShouldRetry(e.Unwrap())
 	}
 	return false
 }

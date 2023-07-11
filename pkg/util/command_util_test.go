@@ -490,7 +490,7 @@ func Test_IsSrcsValid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("error creating file context: %v", err)
 			}
-			err = IsSrcsValid(test.srcsAndDest, test.resolvedSources, fileContext)
+			err = IsSrcsValid(instructions.SourcesAndDest{SourcePaths: test.srcsAndDest[0 : len(test.srcsAndDest)-1], DestPath: test.srcsAndDest[len(test.srcsAndDest)-1]}, test.resolvedSources, fileContext)
 			testutil.CheckError(t, test.shouldErr, err)
 		})
 	}
@@ -519,38 +519,6 @@ func Test_ResolveSources(t *testing.T) {
 		actualList, err := ResolveSources(test.srcsAndDest, buildContextPath)
 		testutil.CheckErrorAndDeepEqual(t, false, err, test.expectedList, actualList)
 	}
-}
-
-var testRemoteUrls = []struct {
-	name  string
-	url   string
-	valid bool
-}{
-	{
-		name:  "Valid URL",
-		url:   "https://google.com",
-		valid: true,
-	},
-	{
-		name:  "Invalid URL",
-		url:   "not/real/",
-		valid: false,
-	},
-	{
-		name:  "URL which fails on GET",
-		url:   "https://thereisnowaythiswilleverbearealurlrightrightrightcatsarethebest.com/something/not/real",
-		valid: false,
-	},
-}
-
-func Test_RemoteUrls(t *testing.T) {
-	for _, test := range testRemoteUrls {
-		t.Run(test.name, func(t *testing.T) {
-			valid := IsSrcRemoteFileURL(test.url)
-			testutil.CheckErrorAndDeepEqual(t, false, nil, test.valid, valid)
-		})
-	}
-
 }
 
 func TestGetUserGroup(t *testing.T) {
@@ -854,4 +822,45 @@ func TestLookupUser(t *testing.T) {
 		})
 	}
 
+}
+
+func TestIsSrcRemoteFileURL(t *testing.T) {
+	type args struct {
+		rawurl string
+	}
+	tests := []struct {
+		name string
+		args args
+		want bool
+	}{
+		{
+			name: "valid https url",
+			args: args{rawurl: "https://google.com?foo=bar"},
+			want: true,
+		},
+		{
+			name: "valid http url",
+			args: args{rawurl: "http://example.com/foobar.tar.gz"},
+			want: true,
+		},
+		{
+			name: "invalid url",
+			args: args{rawurl: "http:/not-a-url.com"},
+			want: false,
+		},
+		{
+			name: "invalid url filepath",
+			args: args{rawurl: "/is/a/filepath"},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				if got := IsSrcRemoteFileURL(tt.args.rawurl); got != tt.want {
+					t.Errorf("IsSrcRemoteFileURL() = %v, want %v", got, tt.want)
+				}
+			},
+		)
+	}
 }

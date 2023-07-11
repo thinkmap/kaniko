@@ -17,6 +17,7 @@ limitations under the License.
 package snapshot
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -223,6 +224,14 @@ func writeToTar(t util.Tar, files, whiteouts []string) error {
 	addedPaths := make(map[string]bool)
 
 	for _, path := range whiteouts {
+		skipWhiteout, err := parentPathIncludesNonDirectory(path)
+		if err != nil {
+			return err
+		}
+		if skipWhiteout {
+			continue
+		}
+
 		if err := addParentDirectories(t, addedPaths, path); err != nil {
 			return err
 		}
@@ -246,6 +255,21 @@ func writeToTar(t util.Tar, files, whiteouts []string) error {
 	return nil
 }
 
+// Returns true if a parent of the given path has been replaced with anything other than a directory
+func parentPathIncludesNonDirectory(path string) (bool, error) {
+	for _, parentPath := range util.ParentDirectories(path) {
+		lstat, err := os.Lstat(parentPath)
+		if err != nil {
+			return false, err
+		}
+
+		if !lstat.IsDir() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func addParentDirectories(t util.Tar, addedPaths map[string]bool, path string) error {
 	for _, parentPath := range util.ParentDirectories(path) {
 		if _, pathAdded := addedPaths[parentPath]; pathAdded {
@@ -262,7 +286,7 @@ func addParentDirectories(t util.Tar, addedPaths map[string]bool, path string) e
 // filesWithLinks returns the symlink and the target path if its exists.
 func filesWithLinks(path string) ([]string, error) {
 	link, err := util.GetSymLink(path)
-	if err == util.ErrNotSymLink {
+	if errors.Is(err, util.ErrNotSymLink) {
 		return []string{path}, nil
 	} else if err != nil {
 		return nil, err
@@ -272,7 +296,7 @@ func filesWithLinks(path string) ([]string, error) {
 		link = filepath.Join(filepath.Dir(path), link)
 	}
 	if _, err := os.Stat(link); err != nil {
-		return []string{path}, nil
+		return []string{path}, nil //nolint:nilerr
 	}
 	return []string{path, link}, nil
 }

@@ -18,7 +18,6 @@ package util
 
 import (
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"os/user"
@@ -88,16 +87,20 @@ func ResolveEnvironmentReplacement(value string, envs []string, isFilepath bool)
 
 func ResolveEnvAndWildcards(sd instructions.SourcesAndDest, fileContext FileContext, envs []string) ([]string, string, error) {
 	// First, resolve any environment replacement
-	resolvedEnvs, err := ResolveEnvironmentReplacementList(sd, envs, true)
+	resolvedEnvs, err := ResolveEnvironmentReplacementList(sd.SourcePaths, envs, true)
 	if err != nil {
 		return nil, "", errors.Wrap(err, "failed to resolve environment")
 	}
 	if len(resolvedEnvs) == 0 {
 		return nil, "", errors.New("resolved envs is empty")
 	}
-	dest := resolvedEnvs[len(resolvedEnvs)-1]
+	dests, err := ResolveEnvironmentReplacementList([]string{sd.DestPath}, envs, true)
+	if err != nil {
+		return nil, "", errors.Wrap(err, "failed to resolve environment for dest path")
+	}
+	dest := dests[0]
 	// Resolve wildcards and get a list of resolved sources
-	srcs, err := ResolveSources(resolvedEnvs[0:len(resolvedEnvs)-1], fileContext.Root)
+	srcs, err := ResolveSources(resolvedEnvs, fileContext.Root)
 	if err != nil {
 		return nil, "", errors.Wrap(err, "failed to resolve sources")
 	}
@@ -173,10 +176,14 @@ func IsDestDir(path string) bool {
 
 // DestinationFilepath returns the destination filepath from the build context to the image filesystem
 // If source is a file:
+//
 //	If dest is a dir, copy it to /dest/relpath
-// 	If dest is a file, copy directly to dest
+//	If dest is a file, copy directly to dest
+//
 // If source is a dir:
+//
 //	Assume dest is also a dir, and copy to dest/
+//
 // If dest is not an absolute filepath, add /cwd to the beginning
 func DestinationFilepath(src, dest, cwd string) (string, error) {
 	_, srcFileName := filepath.Split(src)
@@ -222,8 +229,8 @@ func URLDestinationFilepath(rawurl, dest, cwd string, envs []string) (string, er
 }
 
 func IsSrcsValid(srcsAndDest instructions.SourcesAndDest, resolvedSources []string, fileContext FileContext) error {
-	srcs := srcsAndDest[:len(srcsAndDest)-1]
-	dest := srcsAndDest[len(srcsAndDest)-1]
+	srcs := srcsAndDest.SourcePaths
+	dest := srcsAndDest.DestPath
 
 	if !ContainsWildcards(srcs) {
 		totalSrcs := 0
@@ -283,12 +290,8 @@ func IsSrcsValid(srcsAndDest instructions.SourcesAndDest, resolvedSources []stri
 }
 
 func IsSrcRemoteFileURL(rawurl string) bool {
-	_, err := url.ParseRequestURI(rawurl)
-	if err != nil {
-		return false
-	}
-	_, err = http.Get(rawurl)
-	return err == nil
+	u, err := url.ParseRequestURI(rawurl)
+	return err == nil && u.Scheme != "" && u.Host != ""
 }
 
 func UpdateConfigEnv(envVars []instructions.KeyValuePair, config *v1.Config, replacementEnvs []string) error {

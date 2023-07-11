@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/minio/highwayhash"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -144,6 +145,12 @@ func RedoHasher() func(string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+
+		logrus.Debugf("Hash components for file: %s, mode: %s, mtime: %s, size: %s, user-id: %s, group-id: %s",
+			p, []byte(fi.Mode().String()), []byte(fi.ModTime().String()),
+			[]byte(strconv.FormatInt(fi.Size(), 16)), []byte(strconv.FormatUint(uint64(fi.Sys().(*syscall.Stat_t).Uid), 36)),
+			[]byte(strconv.FormatUint(uint64(fi.Sys().(*syscall.Stat_t).Gid), 36)))
+
 		h.Write([]byte(fi.Mode().String()))
 		h.Write([]byte(fi.ModTime().String()))
 		h.Write([]byte(strconv.FormatInt(fi.Size(), 16)))
@@ -195,7 +202,7 @@ func Lgetxattr(path string, attr string) ([]byte, error) {
 	dest := make([]byte, 128)
 	sz, errno := unix.Lgetxattr(path, attr, dest)
 
-	for errno == unix.ERANGE {
+	for errors.Is(errno, unix.ERANGE) {
 		// Buffer too small, use zero-sized buffer to get the actual size
 		sz, errno = unix.Lgetxattr(path, attr, []byte{})
 		if errno != nil {
@@ -206,7 +213,7 @@ func Lgetxattr(path string, attr string) ([]byte, error) {
 	}
 
 	switch {
-	case errno == unix.ENODATA:
+	case errors.Is(errno, unix.ENODATA):
 		return nil, nil
 	case errno != nil:
 		return nil, errno

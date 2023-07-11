@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package executor
 
 import (
@@ -175,9 +176,9 @@ func setupMultistageTests(t *testing.T) (string, func()) {
 	if err := ioutil.WriteFile(mFile, []byte(mountInfo), 0644); err != nil {
 		t.Fatal(err)
 	}
-	config.IgnoreListPath = mFile
+	config.MountInfoPath = mFile
 	return testDir, func() {
 		config.RootDir = constants.RootDir
-		config.IgnoreListPath = constants.IgnoreListPath
+		config.MountInfoPath = constants.MountInfoPath
 	}
 }
